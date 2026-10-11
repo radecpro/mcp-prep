@@ -1,0 +1,2 @@
+mcp[cli]==2.3.0
+kubernetes==37.0.1
