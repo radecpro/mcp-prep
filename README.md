@@ -4,8 +4,114 @@ A hands-on MCP prototype for read-only Kubernetes diagnostics. A Python MCP
 server exposes three tools; a separate Python client runs a deterministic
 workflow and prints deployment, pod, and event evidence.
 
-This is the completed MCP stage of a learning project. RAG and an AI agent are
-planned next. The current client does not use an LLM.
+This learning project includes MCP diagnostics and local RAG over runbooks:
+semantic retrieval plus cited answers through Ollama. The deterministic MCP
+client still prints cluster evidence separately. Combining that evidence with
+RAG and adding an AI agent are subsequent stages.
+
+## Runbook knowledge base
+
+The initial Polish-language corpus for the RAG stage lives in `runbooks/`:
+
+- [ImagePullBackOff](runbooks/image-pull-backoff.md): image references, registry access, and pull failures.
+- [CrashLoopBackOff](runbooks/crash-loop-back-off.md): termination evidence, logs, and probe failures.
+- [Pending](runbooks/pending-pod.md): scheduling versus preparation on an assigned node.
+
+Each runbook includes read-only diagnostic commands, evidence interpretation,
+MCP data limitations, completion criteria, and official documentation sources.
+Additional lab administrator reads are explicitly marked.
+
+## Local semantic retrieval
+
+The retrieval stage runs independently of Kubernetes and the MCP server.
+It uses FastEmbed with the multilingual `intfloat/multilingual-e5-small` model
+on CPU, with explicit E5 `passage:` and `query:` prefixes and cosine ranking.
+No embedding API or API key is needed. This stage is tested on Python 3.14;
+the additional dependencies have their own Python/platform requirements.
+
+```bash
+source .venv/bin/activate
+python -m pip install -r requirements-rag.txt
+python rag.py index
+python rag.py search 'Nie można pobrać obrazu: manifest unknown' --top-k 3
+python rag.py search 'Gdzie znajdę logi poprzedniego uruchomienia?' --json
+python scripts/verify_rag.py
+```
+
+Indexing downloads the model on first use, splits each H2 section into windows
+of at most 256 model tokens (including the repeated title and section heading),
+and overlaps long sections by 40 body tokens. Source-reference sections are
+excluded from retrieval. Each result includes the source file, section, line
+range, chunk ID, text, and cosine score. Token windows can split code or tables;
+consult the linked source for the complete diagnostic procedure.
+
+The JSON index and model cache live under ignored `.local/`. Search uses cached
+model files only and can run offline after indexing. Re-run `python rag.py index`
+after changing, adding, or removing a runbook; search rejects a stale index.
+The model name is fixed, but downloaded model assets are not revision-pinned.
+
+Search always returns the nearest fragments, including for unrelated questions.
+A cosine score is a ranking signal, not a probability or proof that a fragment
+answers the question. The verifier covers six diagnostic queries in Polish;
+it is a smoke check rather than a general retrieval benchmark.
+
+References: [FastEmbed](https://github.com/qdrant/fastembed) and the
+[multilingual E5 model card](https://huggingface.co/intfloat/multilingual-e5-small).
+
+## Local RAG answers
+
+`answer.py` retrieves runbook fragments, expands the matching H2 sections to
+restore complete commands/tables, and sends the question and those sections to
+Ollama on `127.0.0.1:11434`. The default model is `qwen3:4b-instruct`.
+The model receives no live Kubernetes state. The answer contains cited claims
+and missing evidence, or an `insufficient_context` status for an unsupported
+question. Neither the Python code nor the model executes diagnostic commands.
+
+The bundled setup helper is for macOS and Python 3.12+ (tested on Apple Silicon
+with Python 3.14 and 24 GB RAM). It downloads the official Ollama v0.40.3 runtime
+and verifies its pinned SHA-256. Other platforms can use an existing Ollama
+installation listening on the same loopback address, with cloud features disabled.
+
+```bash
+python scripts/setup-ollama.py
+python scripts/serve-ollama.py
+```
+
+The server runs in the foreground. In a second terminal, from the repository:
+
+```bash
+source .venv/bin/activate
+OLLAMA_HOST=127.0.0.1:11434 .local/ollama/ollama pull qwen3:4b-instruct
+python answer.py 'Kontener ma ImagePullBackOff. Event mówi manifest unknown. Co sprawdzić?'
+python answer.py 'Jak odczytać logi poprzedniego uruchomienia kontenera?' --json
+python scripts/verify_answers.py
+python scripts/verify_answers.py --live
+```
+
+Stop the foreground server with Ctrl+C. The runtime and downloaded models are
+ignored under `.local/`; Ollama may also create its normal user key under
+`~/.ollama/`. The server helper binds to loopback and sets `OLLAMA_NO_CLOUD=1`.
+Internet access is needed for initial downloads; inference uses local assets.
+The model tag is not revision-pinned. `--model` selects another locally pulled
+model; quality and structured-output support must be checked separately.
+
+Generation uses temperature 0, a 16K context, up to 1536 output tokens, and a
+180-second HTTP timeout. Oversized input is rejected rather than intentionally
+truncated. Returned JSON is validated: every claim needs an existing source ID;
+incomplete generation and unknown citations are errors. An unsupported question
+is a successful report with `status=insufficient_context`, not a transport error.
+`--json` includes the exact source sections supplied to the model for inspection.
+
+Citation validation checks references, not factual support. A valid citation
+does not prove that the model's claim follows from the source. Abstention and
+resistance to instructions embedded in retrieved text are prompted behaviors,
+not guarantees. Live checks cover three diagnostic questions and one unrelated
+question; these do not establish general reliability. `client.py` remains a
+separate MCP evidence workflow.
+
+References: [Ollama API](https://docs.ollama.com/api/chat),
+[Ollama v0.40.3](https://github.com/ollama/ollama/releases/tag/v0.40.3), and
+[Qwen3 4B Instruct](https://ollama.com/library/qwen3:4b-instruct).
 
 ## Architecture
 
