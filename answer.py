@@ -119,31 +119,31 @@ def validate_answer(data: dict, source_count: int) -> None:
             raise ValueError("Duplicate citations")
 
 
-def ask(query: str, top_k: int = 5, model: str = LLM) -> dict:
-    results = rag.search(query, top_k)
-    sources = context_sources(results)
-    rag.load_index()  # Reject edits between retrieval and source expansion.
-    user_content = json.dumps({"question": query, "sources": sources}, ensure_ascii=False)
+def generate(context: dict, system: str, schema: dict, model: str = LLM,
+             *, timeout: float = 180, num_predict: int = 1536) -> dict:
+    """Shared local transport; callers validate their own response contract."""
+    user_content = json.dumps(context, ensure_ascii=False)
     # Conservative UTF-8 budget leaves room for output in a 16K context.
-    if len((SYSTEM + user_content).encode("utf-8")) > 12000:
+    if len((system + user_content).encode("utf-8")) > 12000:
         raise ValueError("Context too large; reduce --top-k or shorten the question")
     payload = {
         "model": model,
-        "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user_content}],
-        "stream": False, "format": response_schema(len(sources)),
-        "options": {"temperature": 0, "num_ctx": 16384, "num_predict": 1536},
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user_content}],
+        "stream": False, "format": schema,
+        "options": {"temperature": 0, "num_ctx": 16384, "num_predict": num_predict},
         "keep_alive": "5m",
     }
     request = Request(ENDPOINT, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
     # Never send the local request through proxy environment variables.
     try:
-        with build_opener(ProxyHandler({})).open(request, timeout=180) as response:
+        with build_opener(ProxyHandler({})).open(request, timeout=timeout) as response:
             raw = response.read(1_000_001)
             if len(raw) > 1_000_000:
                 raise ValueError("Ollama response exceeded size limit")
             envelope = json.loads(raw)
     except HTTPError as exc:
-        raise ValueError(f"Ollama HTTP {exc.code}; ensure the requested model is pulled") from exc
+        detail = "ensure the requested model is pulled" if exc.code == 404 else "request rejected; check the schema and local server diagnostics"
+        raise ValueError(f"Ollama HTTP {exc.code}; {detail}") from exc
     except (URLError, TimeoutError) as exc:
         raise ValueError("Ollama unavailable or timed out; start the local server") from exc
     if envelope.get("done") is not True or envelope.get("done_reason") != "stop":
@@ -151,7 +151,15 @@ def ask(query: str, top_k: int = 5, model: str = LLM) -> dict:
     content = envelope.get("message", {}).get("content")
     if not isinstance(content, str):
         raise ValueError("Ollama returned no answer content")
-    answer = json.loads(content)
+    return json.loads(content)
+
+
+def ask(query: str, top_k: int = 5, model: str = LLM) -> dict:
+    results = rag.search(query, top_k)
+    sources = context_sources(results)
+    rag.load_index()  # Reject edits between retrieval and source expansion.
+    context = {"question": query, "sources": sources}
+    answer = generate(context, SYSTEM, response_schema(len(sources)), model)
     validate_answer(answer, len(sources))
     # Preserve the exact sections supplied to the model for audit and reproduction.
     return {**answer, "model": model, "sources": sources}
