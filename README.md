@@ -79,7 +79,7 @@ References: [FastEmbed](https://github.com/qdrant/fastembed) and the
 
 `answer.py` retrieves runbook fragments, expands the matching H2 sections to
 restore complete commands/tables, and sends the question and those sections to
-Ollama on `127.0.0.1:11434`. The default model is `qwen3:4b-instruct`.
+Ollama on `127.0.0.1:11435`. The default model is `qwen3:4b-instruct`.
 The model receives no live Kubernetes state. The answer contains cited claims
 and missing evidence, or an `insufficient_context` status for an unsupported
 question. Neither the Python code nor the model executes diagnostic commands.
@@ -94,11 +94,15 @@ python scripts/setup-ollama.py
 python scripts/serve-ollama.py
 ```
 
+The project server uses port `11435` so it can coexist with a global Ollama
+installation on its default port. Project clients and the commands below target
+the project server and its separate model store.
+
 The server runs in the foreground. In a second terminal, from the repository:
 
 ```bash
 source .venv/bin/activate
-OLLAMA_HOST=127.0.0.1:11434 .local/ollama/ollama pull qwen3:4b-instruct
+OLLAMA_HOST=127.0.0.1:11435 .local/ollama/ollama pull qwen3:4b-instruct
 python answer.py 'Kontener ma ImagePullBackOff. Event mówi manifest unknown. Co sprawdzić?'
 python answer.py 'Jak odczytać logi poprzedniego uruchomienia kontenera?' --json
 python scripts/verify_answers.py
